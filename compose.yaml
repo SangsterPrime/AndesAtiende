@@ -1,0 +1,111 @@
+# EQUIPO 05: Reemplazar ghcr.io/REEMPLAZAR_USUARIO por tu cuenta real
+# antes de hacer tag ep2. En la defensa NO modificar ni construir nada.
+name: andesatiende
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: andes
+      POSTGRES_PASSWORD: andes_local_demo
+      POSTGRES_DB: andesdb
+    volumes:
+      - datos_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U andes -d andesdb"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+    restart: unless-stopped
+    cpus: 0.75
+    mem_limit: 384m
+  carga:
+    image: ghcr.io/REEMPLAZAR_USUARIO/andesatiende-carga:ep2
+    environment:
+      DATABASE_URL: postgresql://andes:andes_local_demo@db:5432/andesdb
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import pathlib;assert pathlib.Path('/app/datos/clientes.csv').exists()"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    cpus: 0.5
+    mem_limit: 128m
+  ia-1:
+    image: ghcr.io/REEMPLAZAR_USUARIO/andesatiende-ia:ep2
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/health',timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+    cpus: 0.75
+    mem_limit: 384m
+  ia-2:
+    image: ghcr.io/REEMPLAZAR_USUARIO/andesatiende-ia:ep2
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/health',timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+    cpus: 0.75
+    mem_limit: 384m
+  dominio:
+    image: ghcr.io/REEMPLAZAR_USUARIO/andesatiende-dominio:ep2
+    environment:
+      DATABASE_URL: postgresql://andes:andes_local_demo@db:5432/andesdb
+      IA_URL: http://gateway:8080/api/ia/predict
+    depends_on:
+      carga:
+        condition: service_completed_successfully
+      ia-1:
+        condition: service_healthy
+      ia-2:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/health',timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+      start_period: 10s
+    restart: unless-stopped
+    cpus: 0.75
+    mem_limit: 256m
+  front:
+    image: ghcr.io/REEMPLAZAR_USUARIO/andesatiende-front:ep2
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:80/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+    cpus: 0.25
+    mem_limit: 64m
+  gateway:
+    image: ghcr.io/REEMPLAZAR_USUARIO/andesatiende-gateway:ep2
+    ports:
+      - "8080:8080"
+    depends_on:
+      front:
+        condition: service_healthy
+      dominio:
+        condition: service_healthy
+      ia-1:
+        condition: service_healthy
+      ia-2:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+    cpus: 0.5
+    mem_limit: 64m
+volumes:
+  datos_pg:

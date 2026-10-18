@@ -1,0 +1,37 @@
+# IMPORTANTISIMO: no publicar el ZIP original ni los CSV antes de seudonimizarlos
+caso/
+datos/originales/
+*.zip
+.env
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+# Estos artefactos se REGENERAN en Actions antes de cada build
+datos/procesados/*
+!datos/procesados/.gitkeep
+servicio-ia/modelo/*
+!servicio-ia/modelo/.gitkeep
+
+# ==========================================
+# React / Vite / Node.js / pnpm
+# ==========================================
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# ==========================================
+# Variables de entorno y secretos
+# ==========================================
+.env.*
+!.env.example
+
+# ==========================================
+# Configuracion local del editor y sistema
+# ==========================================
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+

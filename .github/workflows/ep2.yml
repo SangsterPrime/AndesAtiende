@@ -1,0 +1,79 @@
+name: AndesAtiende EP2 - CI / GHCR
+on:
+  pull_request:
+    branches: [dev, main]
+  push:
+    branches: [main]
+    tags: [ep2]
+permissions:
+  contents: read
+  packages: write
+jobs:
+  validar-y-publicar:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Descargar codigo
+        uses: actions/checkout@v4
+      - name: Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Dependencias de entrenamiento y pruebas
+        run: |
+          python -m pip install -r requirements-train.txt
+          python -m pip install -r servicio-ia/requirements.txt -r servicio-dominio/requirements.txt
+      - name: Pipeline ETL - perfilar limpiar integrar
+        run: python datos/preparar.py
+      - name: Test calidad de datos
+        run: python -m pytest -q datos/tests
+      - name: Entrenar IA y quality gate macro F1 >= 0.85
+        run: python servicio-ia/entrenar.py --min-f1 0.85
+      - name: Test de contrato IA
+        run: PYTHONPATH=servicio-ia python -m pytest -q servicio-ia/tests
+      - name: Test del servicio de dominio
+        run: PYTHONPATH=servicio-dominio python -m pytest -q servicio-dominio/tests
+      - name: Etiquetas y nombre de owner en minuscula
+        shell: bash
+        run: |
+          echo "OWNER_LC=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
+          echo "SHA_SHORT=${GITHUB_SHA:0:7}" >> "$GITHUB_ENV"
+      - name: Login GHCR solo en main y ep2
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build amd64 y publicacion de 5 imagenes
+        shell: bash
+        env:
+          REVISION: ${{ github.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          for service in ia dominio carga front gateway; do
+            case "$service" in
+              ia) folder=servicio-ia;;
+              dominio) folder=servicio-dominio;;
+              *) folder="$service";;
+            esac
+            base="ghcr.io/${OWNER_LC}/andesatiende-${service}"
+            if [[ "$EVENT_NAME" == "push" && "$REF_NAME" == "ep2" ]]; then
+              # El tag ep2 reutiliza EXACTAMENTE la imagen publicada por main.
+              docker pull "${base}:sha-${SHA_SHORT}"
+              docker tag "${base}:sha-${SHA_SHORT}" "${base}:ep2"
+              docker push "${base}:ep2"
+            else
+              docker build --platform linux/amd64 -f "$folder/Dockerfile" \
+                --label "org.opencontainers.image.revision=${REVISION}" \
+                --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+                -t "${base}:sha-${SHA_SHORT}" .
+              if [[ "$EVENT_NAME" == "push" ]]; then
+                docker push "${base}:sha-${SHA_SHORT}"
+                docker tag "${base}:sha-${SHA_SHORT}" "${base}:latest"
+                docker push "${base}:latest"
+              fi
+            fi
+          done

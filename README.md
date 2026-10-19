@@ -57,6 +57,10 @@ docker compose -p equipo05 up -d
 
 Visitar `http://localhost:8080` y escribir «No tengo internet». `docker compose -p equipo05 ps` debe mostrar servicios healthy y `carga` exited (0).
 
+## Frontend React
+
+`front/` usa React 19, TypeScript, Vite, Tailwind CSS y una esfera Three.js opcional. Desarrollo y pruebas con **pnpm**; ver [front/README.md](front/README.md) para instalación, proxy al gateway, accesibilidad, validación y Docker multi-stage. La entrega mantiene el único puerto público `8080` y las imágenes GHCR del compose. El frontend solo presenta resultados recibidos de `/api/chat`, sin autenticación ni integración real con Genesys.
+
 **Importante:** no intentar esos dos comandos hasta publicar las cinco imágenes y sustituir `REEMPLAZAR_USUARIO`. No se hicieron publicaciones desde ChatGPT.
 
 ## Demostraciones de defensa

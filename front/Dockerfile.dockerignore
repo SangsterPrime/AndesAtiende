@@ -1,0 +1,12 @@
+# Contexto aislado para el build del frontend desde la raíz del repositorio.
+**
+!front/
+!front/**
+front/node_modules/
+front/dist/
+front/coverage/
+front/test-results/
+front/playwright-report/
+front/*.tsbuildinfo
+front/.env*
+!front/.env.example

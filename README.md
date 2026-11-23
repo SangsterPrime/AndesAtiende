@@ -41,6 +41,35 @@ Los artefactos del entrenamiento y datos preparados están en `.gitignore`, porq
 
 La evaluación actual obtiene macro-F1 **1.0000** sobre 303 textos de prueba distintos (de 1211 textos únicos), debido a textos de laboratorio sintéticos altamente repetitivos. No debe interpretarse como calidad validada en usuarios reales.
 
+### Entrenamiento compatible con SageMaker (EP3)
+
+Se reutiliza el mismo pipeline TF-IDF + regresión logística, el split por textos únicos y el quality gate. El comando local `python servicio-ia/entrenar.py --min-f1 0.85` no cambia: sin variables de SageMaker lee `datos/procesados/tickets.csv`, escribe en `servicio-ia/modelo/` y mantiene `ep2-1.0.0` como versión predeterminada. **Ese comando local sí reemplaza los artefactos en su salida habitual**, como antes.
+
+Opciones para un Training Job o su simulación local:
+
+- `SM_CHANNEL_TRAIN`: directorio que contiene el CSV **ya tratado**, con nombre `tickets.csv` y columnas `texto_consulta` y `categoria`. Si se define, no se recurre a los datos locales cuando falta el archivo.
+- `SM_MODEL_DIR`: directorio de salida para `clasificador.joblib` y `metadata.json`, escritos solo al superar el quality gate. Las dos variables son independientes.
+- `--model-version ep3-1.0.0`: versión que se registra en metadata. En SageMaker, pasar `model-version` como hiperparámetro al entry point `entrenar.py`.
+
+La adaptación cubre el **entry point de entrenamiento**, no crea recursos, contenedores, roles ni jobs en AWS. El entorno del Training Job debe proporcionar las dependencias de `requirements-train.txt` y las variables/rutas indicadas. No cambia la API de inferencia.
+
+Para repetir la comprobación segura en PowerShell desde la raíz, con las dependencias de entrenamiento instaladas:
+
+```powershell
+# Copia los tickets tratados a un canal temporal, simula ambas variables,
+# ejecuta el CLI, recarga el modelo, predice y comprueba los hashes de EP2.
+python -m pytest -q -s servicio-ia/tests/test_entrenar_sagemaker.py
+
+# Regresiones del entrenamiento y calidad de los datos ya tratados.
+python -m pytest -q servicio-ia/tests/test_entrenar.py servicio-ia/tests/test_entrenar_sagemaker.py datos/tests
+```
+
+La prueba usa `tmp_path` de pytest tanto para entrada como para salida, sin modificar variables del shell ni regenerar datos o artefactos EP2. Si falta `datos/procesados/tickets.csv`, la integración informa `SKIPPED`; no equivale a una validación exitosa. Las predicciones y métricas impresas provienen de la ejecución, no de fixtures inventados.
+
+**Alcance de datos EP3:** se entrena únicamente con los tickets tratados disponibles. Integrar conversaciones sigue pendiente hasta recuperar sus transcripciones; sus metadatos no sustituyen el texto ausente y no se generan transcripciones sintéticas para este recorrido.
+
+Comprobación local realizada en Windows con Python 3.11.9 y un entorno virtual temporal fuera del repositorio, usando las versiones fijadas de `requirements-train.txt` y los requirements de IA/dominio: **12 pruebas de entrenamiento/datos, 2 de API IA y 2 de dominio correctas**, sin omisiones. La simulación obtuvo 23.803 filas válidas, 1.211 textos únicos, 908 para entrenamiento y 303 para evaluación, macro-F1 1,0000; se recargó el clasificador y se comprobaron predicciones y probabilidades válidas. Los hashes SHA-256 de los artefactos locales EP2 quedaron intactos. Estas métricas siguen sujetas a la limitación de datos sintéticos de laboratorio indicada arriba. Las pruebas API emiten avisos de deprecación de `on_event` y de un alias de AnyIO, sin fallos. **Pendiente validar Python 3.12 y el entorno real de SageMaker**; no se realizaron operaciones AWS ni cambios en dependencias, datos o API.
+
 ## Publicar desde GitHub (ANTES de la entrega)
 
 1. Crear repositorio personal/público y subir este código a ramas `dev` y `feat/`, siguiendo los PR exigidos. Evitar pushes directos a `main`.

@@ -18,7 +18,7 @@ Antes de esta rama solo existían `scripts/configurar_owner.py`, `scripts/probar
 | `servicio-ia/sm_entrypoint.py` | Contrato SageMaker `train` / `serve` con propagación de señales |
 | `servicio-ia/sm_serving.py` | Puerto 8080, `/ping` y `/invocations`, un worker |
 
-Se usa Boto3, no el SDK de alto nivel de SageMaker. No se modifica el frontend, gateway, compose, CI, API EP2 ni el contrato `/api/chat`; el endpoint es una prueba independiente, **todavía no integrado en el chatbot**. No necesita NVIDIA ni lee `.env`.
+Se usa Boto3, no el SDK de alto nivel de SageMaker. Estos scripts entrenan y despliegan el endpoint de forma independiente. La integración del chatbot mediante `IA_BACKEND=sagemaker` y el overlay `compose.ep3.yaml` se explica en el [README principal](../../README.md#chat-y-predicción-con-sagemaker-ep3); conserva el contrato `/api/chat` y añade `/api/predict` a través del dominio. No necesita NVIDIA; los scripts AWS no leen `.env`.
 
 ## Dependencias y contrato del artefacto
 

@@ -1,0 +1,2 @@
+# Los entrypoints POSIX deben funcionar también tras un checkout en Windows.
+gateway/*.sh text eol=lf

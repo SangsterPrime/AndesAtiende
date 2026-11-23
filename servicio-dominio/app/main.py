@@ -4,11 +4,12 @@ import re
 from datetime import datetime, timezone
 from time import perf_counter
 from uuid import uuid4
+from typing import Annotated
 import httpx
 import psycopg
 from app.funciones import minimiza_pii, RESPUESTAS
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
 app=FastAPI(title='AndesAtiende · Dominio',version='1.0.0')
 DATABASE_URL=os.getenv('DATABASE_URL','postgresql://andes:andes_local_demo@db:5432/andesdb')
@@ -17,6 +18,21 @@ IA_URL=os.getenv('IA_URL','http://gateway:8080/api/ia/predict')
 class Mensaje(BaseModel):
     model_config=ConfigDict(extra='forbid')
     mensaje:str=Field(min_length=3,max_length=1200)
+
+    @field_validator('mensaje')
+    @classmethod
+    def validar_mensaje(cls, value):
+        value=value.strip()
+        if len(value)<3:
+            raise ValueError('El mensaje debe tener al menos 3 caracteres sin espacios exteriores')
+        return value
+
+
+class Inferencia(BaseModel):
+    intencion:Annotated[str,StringConstraints(strip_whitespace=True,min_length=1)]
+    confianza:float=Field(strict=True,ge=0,le=1,allow_inf_nan=False)
+    version_modelo:Annotated[str,StringConstraints(strip_whitespace=True,min_length=1)]
+    replica:str|None=None
 
 
 @app.get('/health')
@@ -29,20 +45,21 @@ def health():
         raise HTTPException(status_code=503,detail='BD no disponible')
 
 @app.post('/chat')
+@app.post('/predict')
 async def chat(payload:Mensaje):
     inicio=perf_counter()
     mensaje=minimiza_pii(payload.mensaje.strip())
     # El gateway se encarga de elegir una réplica y del failover HTTP.
     try:
-        async with httpx.AsyncClient(timeout=2.5) as cliente:
+        async with httpx.AsyncClient(timeout=8.0) as cliente:
             r=await cliente.post(IA_URL,json={'mensaje':mensaje})
             r.raise_for_status()
-            inferencia=r.json()
+            inferencia=Inferencia.model_validate(r.json())
     except (httpx.HTTPError,ValueError):
         # Falla controlada: no fabricamos una predicción que no existe.
         raise HTTPException(status_code=503,detail='El clasificador está temporalmente indisponible; solicita asistencia humana.')
-    intent=inferencia['intencion']
-    confianza=float(inferencia['confianza'])
+    intent=inferencia.intencion
+    confianza=inferencia.confianza
     derivar=intent=='anulacion' or re.search(r'(?i)\b(ejecutiv[oa]|persona real|hablar con humano|cancelar mi servicio)\b',mensaje) is not None or confianza<0.15
     respuesta=RESPUESTAS.get(intent,RESPUESTAS['consulta_general'])
     if derivar and intent!='anulacion':
@@ -51,12 +68,12 @@ async def chat(payload:Mensaje):
     try:
         with psycopg.connect(DATABASE_URL,connect_timeout=3) as db:
             db.execute('INSERT INTO predicciones (prediccion_id, entrada, resultado, confianza, version_modelo, fecha, derivada) VALUES (%s,%s,%s,%s,%s,%s,%s)',
-               (prediccion_id,mensaje,intent,confianza,inferencia['version_modelo'],datetime.now(timezone.utc),derivar))
+               (prediccion_id,mensaje,intent,confianza,inferencia.version_modelo,datetime.now(timezone.utc),derivar))
             db.commit()
     except Exception:
         raise HTTPException(status_code=503,detail='No se pudo registrar la predicción; operación no confirmada.')
-    return {'prediccion_id':prediccion_id,'intencion':intent,'confianza':confianza,'version_modelo':inferencia['version_modelo'],
-      'respuesta':respuesta,'derivar_humano':derivar,'replica_ia':inferencia.get('replica'),
+    return {'prediccion_id':prediccion_id,'intencion':intent,'confianza':confianza,'version_modelo':inferencia.version_modelo,
+      'respuesta':respuesta,'derivar_humano':derivar,'replica_ia':inferencia.replica,
       'latencia_total_ms':round((perf_counter()-inicio)*1000,2)}
 
 @app.get('/estadisticas')

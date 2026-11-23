@@ -1,0 +1,31 @@
+# Overlay opcional: no cambia los tags ni el modo local predeterminado de EP2.
+# Requiere Docker Compose y un instance profile EC2 con sagemaker:InvokeEndpoint.
+services:
+  ia-1:
+    image: andesatiende-ia:ep3-local
+    build:
+      context: .
+      dockerfile: servicio-ia/Dockerfile
+      target: runtime
+    environment:
+      IA_BACKEND: sagemaker
+      SAGEMAKER_ENDPOINT_NAME: ${SAGEMAKER_ENDPOINT_NAME:?Configura el endpoint real}
+  ia-2:
+    image: andesatiende-ia:ep3-local
+    build:
+      context: .
+      dockerfile: servicio-ia/Dockerfile
+      target: runtime
+    environment:
+      IA_BACKEND: sagemaker
+      SAGEMAKER_ENDPOINT_NAME: ${SAGEMAKER_ENDPOINT_NAME:?Configura el endpoint real}
+  dominio:
+    image: andesatiende-dominio:ep3-local
+    build:
+      context: .
+      dockerfile: servicio-dominio/Dockerfile
+  gateway:
+    image: andesatiende-gateway:ep3-local
+    build:
+      context: .
+      dockerfile: gateway/Dockerfile

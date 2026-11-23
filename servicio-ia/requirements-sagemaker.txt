@@ -1,0 +1,4 @@
+# Misma imagen para entrenamiento e inferencia: no instalar paquetes al arrancar.
+-r requirements.txt
+pandas==2.2.3
+numpy==2.2.6

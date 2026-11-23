@@ -22,7 +22,7 @@ jobs:
       - name: Dependencias de entrenamiento y pruebas
         run: |
           python -m pip install -r requirements-train.txt
-          python -m pip install -r servicio-ia/requirements.txt -r servicio-dominio/requirements.txt
+          python -m pip install -r servicio-ia/requirements.txt -r servicio-dominio/requirements.txt -r scripts/aws/requirements.txt
       - name: Pipeline ETL - perfilar limpiar integrar
         run: python datos/preparar.py
       - name: Test calidad de datos

@@ -41,6 +41,10 @@ Los artefactos del entrenamiento y datos preparados están en `.gitignore`, porq
 
 La evaluación actual obtiene macro-F1 **1.0000** sobre 303 textos de prueba distintos (de 1211 textos únicos), debido a textos de laboratorio sintéticos altamente repetitivos. No debe interpretarse como calidad validada en usuarios reales.
 
+### Endpoint SageMaker serverless (EP3)
+
+El flujo reproducible para Learner Lab en **us-east-1** está en [scripts/aws/README.md](scripts/aws/README.md): pruebas locales, imagen compartida de entrenamiento/inferencia, carga de tickets tratados a S3, Training Job con **LabRole**, despliegue serverless, invocación y limpieza. Incluye los comandos exactos de PowerShell y separa lo verificado localmente de lo pendiente en AWS. Los scripts solo crean recursos cuando se ejecutan explícitamente; no se ejecutaron acciones AWS al prepararlos. El endpoint todavía no está integrado con el chatbot ni modifica `/api/chat`.
+
 ### Entrenamiento compatible con SageMaker (EP3)
 
 Se reutiliza el mismo pipeline TF-IDF + regresión logística, el split por textos únicos y el quality gate. El comando local `python servicio-ia/entrenar.py --min-f1 0.85` no cambia: sin variables de SageMaker lee `datos/procesados/tickets.csv`, escribe en `servicio-ia/modelo/` y mantiene `ep2-1.0.0` como versión predeterminada. **Ese comando local sí reemplaza los artefactos en su salida habitual**, como antes.
@@ -51,7 +55,7 @@ Opciones para un Training Job o su simulación local:
 - `SM_MODEL_DIR`: directorio de salida para `clasificador.joblib` y `metadata.json`, escritos solo al superar el quality gate. Las dos variables son independientes.
 - `--model-version ep3-1.0.0`: versión que se registra en metadata. En SageMaker, pasar `model-version` como hiperparámetro al entry point `entrenar.py`.
 
-La adaptación cubre el **entry point de entrenamiento**, no crea recursos, contenedores, roles ni jobs en AWS. El entorno del Training Job debe proporcionar las dependencias de `requirements-train.txt` y las variables/rutas indicadas. No cambia la API de inferencia.
+El entry point por sí solo no crea recursos AWS. El flujo de [scripts/aws/README.md](scripts/aws/README.md) prepara su imagen, variables y dependencias compatibles para entrenamiento e inferencia; no crea roles IAM. El comando local y la API de inferencia EP2 no cambian.
 
 Para repetir la comprobación segura en PowerShell desde la raíz, con las dependencias de entrenamiento instaladas:
 

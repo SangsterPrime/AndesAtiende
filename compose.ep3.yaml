@@ -21,11 +21,15 @@ services:
       SAGEMAKER_ENDPOINT_NAME: ${SAGEMAKER_ENDPOINT_NAME:?Configura el endpoint real}
   dominio:
     image: andesatiende-dominio:ep3-local
+    environment:
+      EP3_API_KEY: ${EP3_API_KEY:?Configura la clave API del servidor}
     build:
       context: .
       dockerfile: servicio-dominio/Dockerfile
   gateway:
     image: andesatiende-gateway:ep3-local
+    environment:
+      EP3_API_KEY: ${EP3_API_KEY:?Configura la clave API del servidor}
     build:
       context: .
       dockerfile: gateway/Dockerfile

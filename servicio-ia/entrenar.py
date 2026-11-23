@@ -20,10 +20,11 @@ DATA=HERE.parent/'datos'/'procesados'/'tickets.csv'
 def entrenar(min_f1=.60):
     df=pd.read_csv(DATA).dropna(subset=['categoria','texto_consulta']).copy()
     df=df[df.texto_consulta.str.len()>=3]
+    # Validamos antes de deduplicar para no ocultar etiquetas contradictorias.
+    if df.groupby('texto_consulta')['categoria'].nunique().gt(1).any():
+        raise ValueError('Un mismo texto tiene etiquetas contradictorias')
     # Para el conjunto de evaluación no mezclamos textos idénticos entre train/test.
     u=df[['texto_consulta','categoria']].drop_duplicates(subset='texto_consulta')
-    if u.groupby('texto_consulta')['categoria'].nunique().max()>1:
-        raise ValueError('Un mismo texto tiene etiquetas contradictorias')
     train,test=train_test_split(u,test_size=.25,random_state=42,stratify=u.categoria)
     pipe=Pipeline([
         ('tfidf',TfidfVectorizer(lowercase=True,strip_accents='unicode',ngram_range=(1,2),min_df=2,max_features=12000,sublinear_tf=True)),

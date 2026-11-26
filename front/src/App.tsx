@@ -39,7 +39,7 @@ export default function App() {
         <Chat online={online} phase={effectivePhase} onPhaseChange={setPhase} />
       </main>
       <footer className="site-footer" id="alcance">
-        <div><span className="footer-title">Personas primero. Tecnología al servicio.</span><p>Prototipo académico · EP2 · Equipo 05</p></div>
+        <div><span className="footer-title">Personas primero. Tecnología al servicio.</span><p>Prototipo académico · EP3 · Equipo 05</p></div>
         <p className="scope-note">Demo sin autenticación ni acceso a cuentas reales. No realiza operaciones comerciales ni conecta con Genesys. La confianza indica la clasificación del modelo, no la certeza de una solución.</p>
       </footer>
     </div>

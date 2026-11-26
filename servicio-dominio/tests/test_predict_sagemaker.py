@@ -36,6 +36,7 @@ def flow(monkeypatch, tmp_path):
     monkeypatch.setenv('SAGEMAKER_ENDPOINT_NAME', 'andes-test')
     monkeypatch.setenv('MODEL_DIR', str(tmp_path / 'no-modelo'))
     monkeypatch.setenv('EP3_API_KEY', secrets.token_urlsafe(32))
+    monkeypatch.setenv('EP3_LLM_ENABLED', '0')
     monkeypatch.delenv('NVIDIA_API_KEY', raising=False)
     monkeypatch.setattr(ia.boto3, 'client', lambda *args, **kwargs: runtime)
     monkeypatch.setattr(ia.joblib, 'load', lambda *args: pytest.fail('No usar joblib'))
@@ -54,6 +55,7 @@ def flow(monkeypatch, tmp_path):
             self.connections = 0
             self.selects = []
             self.row = None
+            self.llm = {}
 
         def __enter__(self):
             self.connections += 1
@@ -65,6 +67,19 @@ def flow(monkeypatch, tmp_path):
         def execute(self, sql, params=None):
             if sql.startswith('INSERT INTO predicciones '):
                 self.inserts.append(params)
+            elif sql.startswith('INSERT INTO respuestas_llm '):
+                self.llm[params[0]] = {'intencion': params[1], 'estado': params[2], 'respuesta': None}
+            elif sql.startswith('SELECT CASE WHEN estado='):
+                record = self.llm.get(params[0])
+                self.row = (record['estado'], record['respuesta']) if record else None
+            elif sql.startswith('SELECT intencion FROM respuestas_llm '):
+                record = self.llm.get(params[0])
+                self.row = (record['intencion'],) if record and record['estado'] == 'pendiente' else None
+            elif sql.startswith('UPDATE respuestas_llm SET estado=%s'):
+                record = self.llm[params[2]]
+                record.update(estado=params[0], respuesta=params[1])
+            elif sql == 'SELECT COUNT(*) FROM predicciones':
+                self.row = (len(self.inserts),)
             elif sql == 'SELECT 1':
                 self.row = (1,)
             else:
@@ -88,14 +103,14 @@ def flow(monkeypatch, tmp_path):
     @gateway.middleware('http')
     async def nginx_simulado(request: Request, call_next):
         path = request.url.path
-        if path == '/api/chat':
+        if path == '/api/chat' or path.startswith('/api/chat/respuesta/'):
             # BFF: reemplaza cabecera del cliente, nunca entrega la clave al navegador.
             request.scope['headers'] = [(k, v) for k, v in request.scope['headers'] if k.lower() != b'x-api-key']
             request.scope['headers'].append((b'x-api-key', os.environ.get('EP3_API_KEY', '').encode()))
         elif path == '/docs':
             request.scope['path'] = '/api/docs'
             request.scope['raw_path'] = b'/api/docs'
-        elif path not in ('/api/predict', '/api/health', '/api/openapi.json') and not path.startswith('/api/predicciones/'):
+        elif path not in ('/api/predict', '/api/conversacion', '/api/estadisticas', '/api/health', '/api/openapi.json') and not path.startswith('/api/predicciones/'):
             return JSONResponse(status_code=404, content={'detail': 'Not Found'})
         return await call_next(request)
 
@@ -218,6 +233,8 @@ def test_gateway_predict_no_evade_dominio():
     ('POST', '/api/predict', '{"mensaje":"No tengo internet"}'),
     ('POST', '/api/predict', '{"mensaje":"x"}'),
     ('POST', '/api/predict', '{json roto'),
+    ('POST', '/api/conversacion', '{json roto'),
+    ('GET', '/api/estadisticas', None),
     ('GET', '/api/predicciones/00000000-0000-0000-0000-000000000001', None),
     ('GET', '/api/predicciones/no-es-uuid', None),
 ])
@@ -298,7 +315,7 @@ def test_health_y_documentacion_publicas(flow, path):
 
 @pytest.mark.parametrize('path', [
     '/api/ia/predict', '/api/ia/modelo', '/api/ia/docs', '/api/invocations',
-    '/api/predict/', '/api/chat/', '/api/estadisticas', '/api/docs', '/api',
+    '/api/predict/', '/api/chat/', '/api/docs', '/api',
 ])
 def test_alias_publicos_bloqueados(flow, path):
     client, _, database, _ = flow
@@ -322,7 +339,7 @@ def test_cabeceras_duplicadas_rechazadas(flow):
     assert database.connections == 0
 
 
-@pytest.mark.parametrize('path', ['/predict', '/chat', '/predicciones/no-es-uuid', '/estadisticas'])
+@pytest.mark.parametrize('path', ['/predict', '/chat', '/conversacion', '/chat/respuesta/no-es-uuid', '/predicciones/no-es-uuid', '/estadisticas'])
 def test_dominio_directo_no_omite_autenticacion(flow, path):
     _, _, database, _ = flow
     with TestClient(dominio.app) as direct:
@@ -340,3 +357,80 @@ def test_consulta_bd_no_disponible_503(flow, monkeypatch):
     monkeypatch.setattr(dominio.psycopg, 'connect', unavailable)
     response = client.get('/api/predicciones/' + str(uuid4()), headers=auth_headers())
     assert response.status_code == 503
+
+
+@pytest.mark.parametrize('route', ['/api/chat', '/api/conversacion'])
+def test_llm_outbox_worker_y_polling_conservan_clasificacion(flow, monkeypatch, route):
+    from app import llm_worker
+    client, stub, database, _ = flow
+    monkeypatch.setenv('EP3_LLM_ENABLED', '1')
+    expect(stub, {'intencion': 'falla_conexion', 'probabilidad': .9, 'version_modelo': 'ep3-async'})
+    response = client.post(route, json={'mensaje': 'No tengo internet'}, headers=auth_headers())
+    assert response.status_code == 200
+    saved = response.json()
+    assert saved['estado_llm'] == 'pendiente'
+    assert saved['version_modelo'] == 'ep3-async'
+    assert database.commits == 1 and len(database.inserts) == len(database.llm) == 1
+    poll = '/api/chat/respuesta/' + saved['prediccion_id']
+    pending = client.get(poll)  # Sin clave en el navegador: el BFF la añade.
+    assert pending.status_code == 200
+    assert pending.json()['estado_llm'] == 'pendiente'
+    assert pending.headers['Cache-Control'] == 'no-store'
+    monkeypatch.setattr(llm_worker, 'generate', lambda *args: 'Revisa las luces del router.')
+    llm_worker.consume(database, saved['prediccion_id'].encode('ascii'), 'fake-key', 'fake-model')
+    ready = client.get(poll)
+    assert ready.json() == {'estado_llm': 'lista', 'respuesta_llm': 'Revisa las luces del router.'}
+    assert os.environ['EP3_API_KEY'] not in ready.text
+    detail = client.get('/api/predicciones/' + saved['prediccion_id'], headers=auth_headers())
+    assert detail.json()['version_modelo'] == 'ep3-async'
+    assert detail.json()['confianza'] == .9
+    assert detail.json()['estado_llm'] == 'lista'
+    assert database.commits == 1 and len(database.inserts) == 1
+
+
+def test_predict_solo_clasifica_aunque_llm_este_activo(flow, monkeypatch):
+    client, stub, database, _ = flow
+    monkeypatch.setenv('EP3_LLM_ENABLED', '1')
+    expect(stub, {'intencion': 'falla_conexion', 'probabilidad': .9, 'version_modelo': 'ep3'})
+    response = client.post('/api/predict', json={'mensaje': 'No tengo internet'}, headers=auth_headers())
+    assert response.status_code == 200 and 'estado_llm' not in response.json()
+    assert not database.llm
+
+
+@pytest.mark.parametrize('intent,message', [
+    ('anulacion', 'No tengo internet'),
+    ('falla_conexion', 'Quiero hablar con una persona'),
+    ('equipos', 'No tengo internet'),
+])
+def test_sin_faq_o_derivacion_no_encola_generacion(flow, monkeypatch, intent, message):
+    client, stub, database, _ = flow
+    monkeypatch.setenv('EP3_LLM_ENABLED', '1')
+    expect(stub, {'intencion': intent, 'probabilidad': .9, 'version_modelo': 'ep3'}, message)
+    response = client.post('/api/chat', json={'mensaje': message})
+    assert response.status_code == 200 and response.json()['estado_llm'] == 'degradada'
+    assert all(record['estado'] == 'degradada' for record in database.llm.values())
+
+
+def test_polling_desactivado_o_id_inexistente_no_filtra_datos(flow, monkeypatch):
+    client, _, _, _ = flow
+    path = '/api/chat/respuesta/' + str(uuid4())
+    assert client.get(path).status_code == 404
+    monkeypatch.setenv('EP3_LLM_ENABLED', '1')
+    assert client.get(path).status_code == 404
+
+
+def test_outbox_fallida_no_confirma_prediccion(flow, monkeypatch):
+    client, stub, database, _ = flow
+    monkeypatch.setenv('EP3_LLM_ENABLED', '1')
+    expect(stub, {'intencion': 'falla_conexion', 'probabilidad': .9, 'version_modelo': 'ep3'})
+    execute = database.execute
+
+    def failing(sql, params=None):
+        if sql.startswith('INSERT INTO respuestas_llm '):
+            raise dominio.psycopg.OperationalError('Outbox no disponible')
+        return execute(sql, params)
+
+    monkeypatch.setattr(database, 'execute', failing)
+    response = client.post('/api/chat', json={'mensaje': 'No tengo internet'})
+    assert response.status_code == 503
+    assert 'prediccion_id' not in response.json() and database.commits == 0

@@ -22,6 +22,7 @@ services:
   dominio:
     image: andesatiende-dominio:ep3-local
     environment:
+      EP3_LLM_ENABLED: ${EP3_LLM_ENABLED:-0}
       EP3_API_KEY: ${EP3_API_KEY:?Configura la clave API del servidor}
     build:
       context: .

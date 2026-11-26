@@ -13,6 +13,15 @@ CREATE TABLE IF NOT EXISTS tickets (ticket_id TEXT PRIMARY KEY, cliente_id TEXT 
 CREATE TABLE IF NOT EXISTS conversaciones (conversacion_id TEXT PRIMARY KEY, cliente_id TEXT REFERENCES clientes(cliente_id), canal TEXT, intencion TEXT);
 CREATE TABLE IF NOT EXISTS faq (articulo_id TEXT PRIMARY KEY, pregunta TEXT, respuesta TEXT, categoria TEXT, vigente BOOLEAN NOT NULL);
 CREATE TABLE IF NOT EXISTS predicciones (prediccion_id UUID PRIMARY KEY, entrada TEXT NOT NULL, resultado TEXT NOT NULL, confianza DOUBLE PRECISION NOT NULL, version_modelo TEXT NOT NULL, fecha TIMESTAMPTZ NOT NULL, derivada BOOLEAN NOT NULL DEFAULT FALSE);
+CREATE TABLE IF NOT EXISTS respuestas_llm (
+    prediccion_id UUID PRIMARY KEY REFERENCES predicciones(prediccion_id),
+    intencion TEXT NOT NULL,
+    estado TEXT NOT NULL CHECK (estado IN ('pendiente', 'lista', 'degradada')),
+    respuesta TEXT,
+    creada TIMESTAMPTZ NOT NULL DEFAULT now(),
+    completada TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS respuestas_llm_pendientes ON respuestas_llm(creada) WHERE estado='pendiente';
 CREATE INDEX IF NOT EXISTS idx_predicciones_fecha ON predicciones (fecha DESC);
 '''
 

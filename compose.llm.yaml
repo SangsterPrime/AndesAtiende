@@ -1,0 +1,49 @@
+# Usar junto con compose.yaml y compose.ep3.yaml.
+services:
+  # No reutilizar :ep2: se necesitan la tabla nueva y el frontend que hace polling.
+  carga:
+    image: andesatiende-carga:ep3-local
+    build:
+      context: .
+      dockerfile: carga/Dockerfile
+  front:
+    image: andesatiende-front:ep3-local
+    build:
+      context: .
+      dockerfile: front/Dockerfile
+  dominio:
+    environment:
+      EP3_LLM_ENABLED: "1"
+  rabbitmq:
+    image: rabbitmq:4-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: andes
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?Configura la contraseña de RabbitMQ}
+    volumes:
+      - datos_rabbitmq:/var/lib/rabbitmq
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 8
+  llm-worker:
+    pull_policy: never
+    image: andesatiende-dominio:ep3-local
+    command: ["python", "-m", "app.llm_worker"]
+    # La imagen comparte código con dominio, pero este proceso NO sirve HTTP.
+    healthcheck:
+      disable: true
+    environment:
+      DATABASE_URL: postgresql://andes:andes_local_demo@db:5432/andesdb
+      NVIDIA_API_KEY: ${NVIDIA_API_KEY:?Configura NVIDIA_API_KEY}
+      NVIDIA_MODEL: ${NVIDIA_MODEL:?Configura el modelo del curso}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:?Configura la contraseña de RabbitMQ}
+    depends_on:
+      dominio:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
+volumes:
+  datos_rabbitmq:

@@ -35,6 +35,10 @@ services:
     mem_limit: 128m
   ia-1:
     image: ghcr.io/REEMPLAZAR_USUARIO/andesatiende-ia:ep2
+    environment:
+      IA_BACKEND: ${IA_BACKEND:-local}
+      SAGEMAKER_ENDPOINT_NAME: ${SAGEMAKER_ENDPOINT_NAME:-}
+      AWS_DEFAULT_REGION: us-east-1
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/health',timeout=2)"]
       interval: 5s
@@ -46,6 +50,10 @@ services:
     mem_limit: 384m
   ia-2:
     image: ghcr.io/REEMPLAZAR_USUARIO/andesatiende-ia:ep2
+    environment:
+      IA_BACKEND: ${IA_BACKEND:-local}
+      SAGEMAKER_ENDPOINT_NAME: ${SAGEMAKER_ENDPOINT_NAME:-}
+      AWS_DEFAULT_REGION: us-east-1
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/health',timeout=2)"]
       interval: 5s
@@ -59,7 +67,8 @@ services:
     image: ghcr.io/REEMPLAZAR_USUARIO/andesatiende-dominio:ep2
     environment:
       DATABASE_URL: postgresql://andes:andes_local_demo@db:5432/andesdb
-      IA_URL: http://gateway:8080/api/ia/predict
+      IA_URL: http://gateway:8081/predict
+      EP3_API_KEY: ${EP3_API_KEY:-}
     depends_on:
       carga:
         condition: service_completed_successfully
@@ -88,6 +97,8 @@ services:
     mem_limit: 64m
   gateway:
     image: ghcr.io/REEMPLAZAR_USUARIO/andesatiende-gateway:ep2
+    environment:
+      EP3_API_KEY: ${EP3_API_KEY:-}
     ports:
       - "8080:8080"
     depends_on:

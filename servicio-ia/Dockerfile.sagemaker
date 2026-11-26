@@ -1,0 +1,12 @@
+FROM python:3.12-slim
+ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 \
+    OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
+WORKDIR /app
+COPY servicio-ia/requirements.txt servicio-ia/requirements-sagemaker.txt ./
+RUN python -m pip install --no-cache-dir -r requirements-sagemaker.txt
+COPY servicio-ia/entrenar.py servicio-ia/sm_entrypoint.py servicio-ia/sm_serving.py ./
+# SageMaker monta /opt/ml; no incluir modelos, tickets, .env o credenciales.
+# Se mantiene root para el contrato del contenedor de SageMaker Serverless.
+EXPOSE 8080
+ENTRYPOINT ["python", "/app/sm_entrypoint.py"]
+CMD ["serve"]

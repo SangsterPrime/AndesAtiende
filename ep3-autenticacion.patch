@@ -1,0 +1,349 @@
+diff --git a/.env.example b/.env.example
+index acca836..19118cb 100644
+--- a/.env.example
++++ b/.env.example
+@@ -10,3 +10,7 @@ IA_BACKEND=local
+ SAGEMAKER_ENDPOINT_NAME=
+ # Región fijada por servicio-ia: us-east-1. En EC2 usar el instance profile IAM.
+ # No agregar claves AWS aquí; las variables NVIDIA no son necesarias para clasificar.
++
++# EP3: secretos independientes del servicio de dominio, solo en el servidor.
++EP3_API_KEY=
++EP3_CHAT_PASSWORD=
+diff --git a/README.md b/README.md
+index cba95f0..d68e218 100644
+--- a/README.md
++++ b/README.md
+@@ -49,7 +49,7 @@ El flujo reproducible para Learner Lab en **us-east-1** está en [scripts/aws/RE
+ 
+ El backend de `servicio-ia` se selecciona mediante `IA_BACKEND=local|sagemaker` (predeterminado: `local`, compatible con EP2). Con `sagemaker` se exige `SAGEMAKER_ENDPOINT_NAME`, se usa boto3 en **us-east-1** y **no se leen archivos `.joblib` ni se recurre a EP2 ante fallos**. No necesita NVIDIA. La región es explícita y el cliente no recibe claves: en EC2 usa el rol del instance profile y la cadena de credenciales AWS; no agregues claves al compose o al repositorio.
+ 
+-Recorrido: `POST /api/chat` o `POST /api/predict` → dominio (valida/minimiza datos) → gateway `/api/ia/predict` → servicio-ia → SageMaker `/invocations` → dominio → PostgreSQL. Ambas rutas públicas aceptan `{"mensaje":"No tengo internet"}` y devuelven el mismo contrato del chat: `prediccion_id`, `intencion`, `confianza`, `version_modelo`, `respuesta`, `derivar_humano`, `replica_ia` y `latencia_total_ms`. IA convierte `probabilidad` en `confianza` sin inventar ni sustituir la versión: **la versión recibida del endpoint se devuelve al cliente y se inserta en `predicciones.version_modelo`**.
++Recorrido: `POST /api/chat` o `POST /api/predict` → dominio (valida/minimiza datos) → gateway `/api/ia/predict` → servicio-ia → SageMaker `/invocations` → dominio → PostgreSQL. Ambas rutas aceptan `{"mensaje":"No tengo internet"}` y devuelven el mismo contrato del chat: `prediccion_id`, `intencion`, `confianza`, `version_modelo`, `respuesta`, `derivar_humano`, `replica_ia` y `latencia_total_ms`. IA convierte `probabilidad` en `confianza` sin inventar ni sustituir la versión: **la versión recibida del endpoint se devuelve al cliente y se inserta en `predicciones.version_modelo`**.
+ 
+ Timeout, error AWS o respuesta inválida producen HTTP 503, sin INSERT ni confirmación de predicción exitosa. Si falla PostgreSQL tampoco se confirma éxito. Se usan timeouts acotados: conexión AWS 1 s/lectura 5 s/sin reintentos SDK, dominio 8 s, gateway 10 s y cliente web 12 s. Un cold start serverless puede excederlos; espera/reintenta manualmente tras revisar el endpoint. `/health` en modo SageMaker valida configuración local del adaptador, **no** hace invocaciones de pago ni garantiza salud remota; no fabrica una versión del modelo. `/modelo` informa backend/endpoint, no métricas locales.
+ 
+@@ -58,14 +58,17 @@ En la EC2 del Lab, con endpoint `InService` e instance profile que permita `sage
+ ```powershell
+ # En un host con Docker y acceso mediante rol EC2. No ejecutado en esta revisión.
+ $env:SAGEMAKER_ENDPOINT_NAME = 'REEMPLAZAR_POR_ENDPOINT_REAL'
++# Configura EP3_API_KEY y EP3_CHAT_PASSWORD en el entorno privado del servidor.
+ docker compose -f compose.yaml -f compose.ep3.yaml up -d --build
+-Invoke-RestMethod -Method Post -Uri http://localhost:8080/api/chat -ContentType application/json -Body '{"mensaje":"No tengo internet"}'
+-Invoke-RestMethod -Method Post -Uri http://localhost:8080/api/predict -ContentType application/json -Body '{"mensaje":"No tengo internet"}'
++# Abre http://localhost:8080/ e ingresa el usuario chat con su contraseña.
++Invoke-RestMethod -Method Post -Uri http://localhost:8080/api/predict -Headers @{"X-API-Key"=$env:EP3_API_KEY} -ContentType application/json -Body '{"mensaje":"No tengo internet"}'
+ ```
+ 
+ `compose.ep3.yaml` construye versiones locales de IA/dominio/gateway, en lugar de ejecutar accidentalmente sus imágenes `:ep2` sin esta integración. IA usa el target `runtime` sin copiar modelos; el Dockerfile predeterminado conserva el target local con artefactos EP2. Los tags remotos y el tag Git `ep2` no se modifican. No ejecutar el overlay en el PC del profesor para la entrega EP2.
+ 
+-**Seguridad:** la demo aún no tiene autenticación/autorización de usuarios ni TLS. `/api/predict` reutiliza las mismas reglas y persistencia de `/api/chat`, no un acceso directo que omita el dominio. La autenticación IAM/SigV4 corresponde únicamente al tramo hacia SageMaker; no autentica al usuario del chat. No exponer el puerto público en Internet sin TLS/control de acceso y revisión de las rutas internas del gateway. El rol IAM y los permisos se verifican en el Lab, no se crean desde la aplicación.
++En EP3, el servicio de dominio requiere la cabecera `X-API-Key` en `POST /api/predict` y `GET /api/predicciones/{id}`. La segunda ruta devuelve la fila persistida o 404. Configura `EP3_API_KEY` en el servidor. Una clave ausente o incorrecta devuelve 401 antes de procesar la entrada. Swagger está en `/docs` y la salud del dominio en `/api/health`; ambas son públicas.
++
++El chat usa una credencial independiente: usuario `chat` y contraseña `EP3_CHAT_PASSWORD`. Al abrir la interfaz, Nginx solicita autenticación HTTP Basic mediante el dominio. El navegador reutiliza la credencial al enviar el mensaje. El dominio también valida directamente `POST /api/chat`. El frontend no recibe la clave API. Usa secretos distintos y HTTPS para el despliegue externo. Solo el puerto 8080 se publica; el listener de balanceo 8081 es interno. IAM protege la llamada a SageMaker. TLS y la verificación en EC2 siguen pendientes.
+ 
+ Pruebas sin Docker/AWS (con dependencias del workflow y artefactos EP2 existentes, que no se regeneran):
+ 
+@@ -127,7 +130,7 @@ Visitar `http://localhost:8080` y escribir «No tengo internet». `docker compos
+ 
+ ## Frontend React
+ 
+-`front/` usa React 19, TypeScript, Vite, Tailwind CSS y una esfera Three.js opcional. Desarrollo y pruebas con **pnpm**; ver [front/README.md](front/README.md) para instalación, proxy al gateway, accesibilidad, validación y Docker multi-stage. La entrega mantiene el único puerto público `8080` y las imágenes GHCR del compose. El frontend solo presenta resultados recibidos de `/api/chat`, sin autenticación ni integración real con Genesys.
++`front/` usa React 19, TypeScript, Vite, Tailwind CSS y una esfera Three.js opcional. Desarrollo y pruebas con **pnpm**; ver [front/README.md](front/README.md) para instalación, proxy al gateway, accesibilidad, validación y Docker multi-stage. La entrega mantiene el único puerto público `8080` y las imágenes GHCR del compose. El frontend solo presenta resultados recibidos de `/api/chat`, sin integración real con Genesys.
+ 
+ **Importante:** no intentar esos dos comandos hasta publicar las cinco imágenes y sustituir `REEMPLAZAR_USUARIO`. No se hicieron publicaciones desde ChatGPT.
+ 
+diff --git a/compose.ep3.yaml b/compose.ep3.yaml
+index 18fed93..df2d3ac 100644
+--- a/compose.ep3.yaml
++++ b/compose.ep3.yaml
+@@ -20,6 +20,10 @@ services:
+       IA_BACKEND: sagemaker
+       SAGEMAKER_ENDPOINT_NAME: ${SAGEMAKER_ENDPOINT_NAME:?Configura el endpoint real}
+   dominio:
++    environment:
++      IA_URL: http://gateway:8081/api/ia/predict
++      EP3_API_KEY: ${EP3_API_KEY:?Configura la clave de la API}
++      EP3_CHAT_PASSWORD: ${EP3_CHAT_PASSWORD:?Configura la contraseña independiente del chat}
+     image: andesatiende-dominio:ep3-local
+     build:
+       context: .
+diff --git a/gateway/nginx.conf b/gateway/nginx.conf
+index 0313b80..6205fa7 100644
+--- a/gateway/nginx.conf
++++ b/gateway/nginx.conf
+@@ -23,10 +23,14 @@ http {
+             proxy_set_header Host $host;
+             proxy_set_header X-Request-ID $request_id;
+         }
+-        location /api/ia/ {
+-            proxy_pass http://ia_pool/;
+-            proxy_set_header Host $host;
+-            proxy_set_header X-Request-ID $request_id;
++        location /api/ia/ { return 404; }
++        location = /docs { proxy_pass http://dominio:8000/docs; }
++        location = /openapi.json { proxy_pass http://dominio:8000/openapi.json; }
++        location = /_chat_access {
++            internal;
++            proxy_pass http://dominio:8000/chat-access;
++            proxy_pass_request_body off;
++            proxy_set_header Content-Length "";
+         }
+         location /api/ {
+             proxy_pass http://dominio:8000/;
+@@ -34,8 +38,26 @@ http {
+             proxy_set_header X-Request-ID $request_id;
+         }
+         location / {
++            auth_request /_chat_access;
++            proxy_set_header Authorization "";
++            proxy_set_header X-API-Key "";
+             proxy_pass http://front:80;
+             proxy_set_header Host $host;
+         }
+     }
++    # Listener interno para dominio; Compose solo publica 8080.
++    server {
++        listen 8081;
++        proxy_connect_timeout 1s;
++        proxy_read_timeout 10s;
++        proxy_next_upstream error timeout http_502 http_503 http_504;
++        proxy_next_upstream_tries 2;
++        location = /api/ia/predict {
++            proxy_pass http://ia_pool/predict;
++            proxy_set_header Authorization "";
++            proxy_set_header X-API-Key "";
++            proxy_set_header X-Request-ID $request_id;
++        }
++        location / { return 404; }
++    }
+ }
+diff --git a/scripts/probar_carga.py b/scripts/probar_carga.py
+index 2c33086..d5f42cd 100644
+--- a/scripts/probar_carga.py
++++ b/scripts/probar_carga.py
+@@ -3,14 +3,21 @@ from concurrent.futures import ThreadPoolExecutor
+ from statistics import mean
+ from time import perf_counter
+ from urllib.request import Request,urlopen
++import base64
++import os
+ import json
+ import argparse
+ 
+ ap=argparse.ArgumentParser();ap.add_argument('--n',type=int,default=100);a=ap.parse_args()
+ texts=['No tengo internet en mi casa','No entiendo mi factura','Quiero cancelar mi servicio','Quiero cambiar mi plan']
+ 
++headers = {'Content-Type': 'application/json'}
++if password := os.getenv('EP3_CHAT_PASSWORD'):
++    credentials = base64.b64encode(f'chat:{password}'.encode()).decode()
++    headers['Authorization'] = f'Basic {credentials}'
++
+ def send(i):
+-    req=Request('http://localhost:8080/api/chat',data=json.dumps({'mensaje':texts[i%4]}).encode(),headers={'Content-Type':'application/json'},method='POST')
++    req=Request('http://localhost:8080/api/chat',data=json.dumps({'mensaje':texts[i%4]}).encode(),headers=headers,method='POST')
+     st=perf_counter()
+     try:
+         with urlopen(req,timeout=5) as r:
+diff --git a/servicio-dominio/app/main.py b/servicio-dominio/app/main.py
+index 78e7200..47fea17 100644
+--- a/servicio-dominio/app/main.py
++++ b/servicio-dominio/app/main.py
+@@ -1,19 +1,61 @@
+ """Dominio telco: única autoridad para lecturas/escrituras en PostgreSQL."""
++import secrets
+ import os
+ import re
+ from datetime import datetime, timezone
+ from time import perf_counter
+-from uuid import uuid4
++from uuid import UUID, uuid4
+ from typing import Annotated
+ import httpx
+ import psycopg
+ from app.funciones import minimiza_pii, RESPUESTAS
+-from fastapi import FastAPI, HTTPException
++from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
++from fastapi.routing import APIRoute
++from fastapi.security import APIKeyHeader, HTTPBasic, HTTPBasicCredentials
++from psycopg.rows import dict_row
+ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
+ 
+-app=FastAPI(title='AndesAtiende · Dominio',version='1.0.0')
++app=FastAPI(title='AndesAtiende · Dominio',version='1.0.0',servers=[{'url':'/api'}])
+ DATABASE_URL=os.getenv('DATABASE_URL','postgresql://andes:andes_local_demo@db:5432/andesdb')
+-IA_URL=os.getenv('IA_URL','http://gateway:8080/api/ia/predict')
++IA_URL=os.getenv('IA_URL','http://gateway:8081/api/ia/predict')
++
++api_key = APIKeyHeader(name='X-API-Key', auto_error=False)
++chat_login = HTTPBasic(realm='AndesAtiende')
++
++
++def matches_secret(value: str | None, variable: str) -> bool:
++    expected = os.getenv(variable)
++    return bool(expected and value and secrets.compare_digest(value.encode(), expected.encode()))
++
++
++class KeyProtectedRoute(APIRoute):
++    """Authenticate before FastAPI reads or validates the JSON body."""
++    def get_route_handler(self):
++        handler = super().get_route_handler()
++
++        async def authenticated(request: Request):
++            if not matches_secret(await api_key(request), 'EP3_API_KEY'):
++                raise HTTPException(status_code=401, detail='Clave API ausente o incorrecta')
++            return await handler(request)
++
++        return authenticated
++
++
++# The dependency also declares the security scheme in OpenAPI.
++protected = APIRouter(route_class=KeyProtectedRoute, dependencies=[Depends(api_key)])
++
++
++def require_chat_login(credentials: Annotated[HTTPBasicCredentials, Depends(chat_login)]):
++    if credentials.username != 'chat' or not matches_secret(credentials.password, 'EP3_CHAT_PASSWORD'):
++        raise HTTPException(status_code=401, detail='Credenciales de chat incorrectas',
++                            headers={'WWW-Authenticate': 'Basic realm="AndesAtiende"'})
++
++
++@app.get('/chat-access', dependencies=[Depends(require_chat_login)], include_in_schema=False)
++def chat_access():
++    """Used by the gateway before serving the chat page."""
++    return {'status': 'ok'}
++
+ 
+ class Mensaje(BaseModel):
+     model_config=ConfigDict(extra='forbid')
+@@ -44,8 +86,8 @@ def health():
+     except Exception:
+         raise HTTPException(status_code=503,detail='BD no disponible')
+ 
+-@app.post('/chat')
+-@app.post('/predict')
++@app.post('/chat', dependencies=[Depends(require_chat_login)])
++@protected.post('/predict')
+ async def chat(payload:Mensaje):
+     inicio=perf_counter()
+     mensaje=minimiza_pii(payload.mensaje.strip())
+@@ -76,6 +118,25 @@ async def chat(payload:Mensaje):
+       'respuesta':respuesta,'derivar_humano':derivar,'replica_ia':inferencia.replica,
+       'latencia_total_ms':round((perf_counter()-inicio)*1000,2)}
+ 
++@protected.get('/predicciones/{id}')
++def obtener_prediccion(id: UUID):
++    try:
++        with psycopg.connect(DATABASE_URL, connect_timeout=3, row_factory=dict_row) as db:
++            row = db.execute(
++                'SELECT prediccion_id, entrada, resultado AS intencion, confianza, '
++                'version_modelo, fecha, derivada AS derivar_humano '
++                'FROM predicciones WHERE prediccion_id = %s', (id,)
++            ).fetchone()
++    except psycopg.Error:
++        raise HTTPException(status_code=503, detail='No se pudo consultar la predicción')
++    if row is None:
++        raise HTTPException(status_code=404, detail='Predicción no encontrada')
++    return row
++
++
++app.include_router(protected)
++
++
+ @app.get('/estadisticas')
+ def estadisticas():
+     with psycopg.connect(DATABASE_URL,connect_timeout=3) as db:
+diff --git a/servicio-dominio/tests/test_predict_sagemaker.py b/servicio-dominio/tests/test_predict_sagemaker.py
+index 47360f9..5d37293 100644
+--- a/servicio-dominio/tests/test_predict_sagemaker.py
++++ b/servicio-dominio/tests/test_predict_sagemaker.py
+@@ -1,5 +1,7 @@
+ """Gateway simulado por prefijo ASGI, IA real, SageMaker/SQL simulados; sin AWS/BD."""
+ import importlib.util
++from uuid import uuid4
++from unittest.mock import Mock
+ import io
+ import json
+ from pathlib import Path
+@@ -22,6 +24,9 @@ HTTP_CLIENT = httpx.AsyncClient
+ 
+ @pytest.fixture
+ def flow(monkeypatch, tmp_path):
++    key, password = str(uuid4()), str(uuid4())
++    monkeypatch.setenv('EP3_API_KEY', key)
++    monkeypatch.setenv('EP3_CHAT_PASSWORD', password)
+     spec = importlib.util.spec_from_file_location('ia_integracion', ROOT / 'servicio-ia/app/main.py')
+     ia = importlib.util.module_from_spec(spec)
+     spec.loader.exec_module(ia)
+@@ -59,6 +64,13 @@ def flow(monkeypatch, tmp_path):
+             pass
+ 
+         def execute(self, sql, params):
++            if sql.startswith('SELECT prediccion_id'):
++                row = next((r for r in self.inserts if r[0] == str(params[0])), None)
++                fields = ('prediccion_id', 'entrada', 'intencion', 'confianza',
++                          'version_modelo', 'fecha', 'derivar_humano')
++                cursor = Mock()
++                cursor.fetchone.return_value = dict(zip(fields, row)) if row else None
++                return cursor
+             assert sql.startswith('INSERT INTO predicciones ')
+             self.inserts.append(params)
+ 
+@@ -70,6 +82,8 @@ def flow(monkeypatch, tmp_path):
+     gateway = FastAPI()
+     gateway.mount('/api', dominio.app)
+     with Stubber(runtime) as stub, TestClient(application), TestClient(gateway) as client:
++        client.headers["X-API-Key"] = key
++        client.auth = ("chat", password)
+         yield client, stub, database, runtime
+         stub.assert_no_pending_responses()
+ 
+@@ -170,3 +184,49 @@ def test_gateway_predict_no_evade_dominio():
+     block = config.split('location = /api/predict {', 1)[1].split('}', 1)[0]
+     assert 'proxy_pass http://dominio:8000/predict;' in block
+     assert 'proxy_read_timeout 10s;' in config
++
++@pytest.mark.parametrize('key', [None, 'incorrecta'])
++def test_clave_rechazada_antes_del_body_y_sql(flow, key):
++    client, _, database, _ = flow
++    client.headers.pop('X-API-Key')
++    if key:
++        client.headers['X-API-Key'] = key
++    assert client.post('/api/predict', content=b'{', headers={'Content-Type': 'application/json'}).status_code == 401
++    assert client.get(f'/api/predicciones/{uuid4()}').status_code == 401
++    assert database.connections == 0
++
++
++def test_consultar_prediccion_guardada(flow):
++    client, stub, database, _ = flow
++    expect(stub, {'intencion': 'falla_conexion', 'probabilidad': .88, 'version_modelo': 'test-42'})
++    created = client.post('/api/predict', json={'mensaje': 'No tengo internet'}).json()
++    saved = client.get('/api/predicciones/' + created['prediccion_id'])
++    assert saved.status_code == 200
++    for field in ('prediccion_id', 'intencion', 'confianza', 'version_modelo', 'derivar_humano'):
++        assert saved.json()[field] == created[field]
++    assert client.get(f'/api/predicciones/{uuid4()}').status_code == 404
++    assert database.commits == 1
++
++
++def test_chat_con_credencial_independiente(flow, monkeypatch):
++    client, stub, database, _ = flow
++    client.headers.pop('X-API-Key')
++    client.auth = None
++    for auth in (None, ('chat', 'incorrecta')):
++        response = client.post('/api/chat', json={'mensaje': 'No tengo internet'}, auth=auth)
++        assert response.status_code == 401
++        assert response.headers['www-authenticate'].startswith('Basic')
++    assert database.connections == 0
++    monkeypatch.setenv('EP3_CHAT_PASSWORD', 'solo-prueba')
++    expect(stub, {'intencion': 'falla_conexion', 'probabilidad': .8, 'version_modelo': 'chat'})
++    assert client.post('/api/chat', json={'mensaje': 'No tengo internet'},
++                       auth=('chat', 'solo-prueba')).status_code == 200
++
++
++def test_docs_y_salud_publicas(monkeypatch):
++    from unittest.mock import MagicMock
++    monkeypatch.setattr(dominio.psycopg, 'connect', MagicMock())
++    with TestClient(dominio.app) as client:
++        assert client.get('/docs').status_code == 200
++        assert client.get('/health').status_code == 200
++        assert client.get('/openapi.json').json()['paths']['/predict']['post']['security']

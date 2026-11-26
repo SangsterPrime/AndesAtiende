@@ -1,0 +1,7 @@
+**
+!servicio-ia/
+!servicio-ia/requirements.txt
+!servicio-ia/requirements-sagemaker.txt
+!servicio-ia/entrenar.py
+!servicio-ia/sm_entrypoint.py
+!servicio-ia/sm_serving.py

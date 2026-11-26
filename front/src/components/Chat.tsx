@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
-import { ChatError, phaseLabels, sendChat, type ChatPhase, type ChatResponse } from '../lib/chat'
+import { ChatError, phaseLabels, sendChat, waitForLlm, type ChatPhase, type ChatResponse } from '../lib/chat'
 import { useReducedMotion } from '../hooks/useReducedMotion'
 import { ResponseDetails } from './ResponseDetails'
 import { Icon } from './Icon'
@@ -24,7 +24,11 @@ export function Chat({ online, phase, onPhaseChange }: { online: boolean; phase:
   const nextId = useRef(1)
   const reducedMotion = useReducedMotion()
 
-  useEffect(() => () => request.current?.abort(), [])
+  const llmRequests = useRef(new Set<AbortController>())
+  useEffect(() => () => {
+    request.current?.abort()
+    llmRequests.current.forEach(controller => controller.abort())
+  }, [])
   useEffect(() => {
     log.current?.scrollTo?.({ top: log.current.scrollHeight, behavior: reducedMotion ? 'instant' : 'smooth' })
   }, [messages, pending, failure, reducedMotion])
@@ -54,6 +58,17 @@ export function Chat({ online, phase, onPhaseChange }: { online: boolean; phase:
       const id = nextId.current++
       setMessages((current) => [...current, { id, role: 'assistant', data }])
       onPhaseChange('success')
+      if (data.estado_llm === 'pendiente') {
+        const llm = new AbortController()
+        llmRequests.current.add(llm)
+        void waitForLlm(data.prediccion_id, llm.signal).catch(() => null).then(answer => {
+          if (llm.signal.aborted) return
+          setMessages(current => current.map(message => message.id === id && message.role === 'assistant'
+            ? { ...message, data: { ...message.data, respuesta: answer ?? data.respuesta,
+                estado_llm: answer ? 'lista' : 'degradada' } }
+            : message))
+        }).finally(() => llmRequests.current.delete(llm))
+      }
     } catch (error) {
       if (controller.signal.aborted) return
       setFailure({ message: error instanceof ChatError ? error.message : 'No se pudo completar la consulta.', query: text })
@@ -82,7 +97,7 @@ export function Chat({ online, phase, onPhaseChange }: { online: boolean; phase:
     <section id="conversacion" className="chat-panel" aria-label="Conversación con AndesAtiende">
       <header className="chat-header">
         <div className="flex items-center gap-3"><span className="assistant-avatar"><Icon name="spark" /></span><div><h2>AndesAtiende</h2><p>Asistente de telecomunicaciones</p></div></div>
-        <span className="demo-tag">DEMO EP2</span>
+        <span className="demo-tag">DEMO EP3</span>
       </header>
       <div className="chat-status" role="status"><span className={`status-dot ${phase}`} /><span>{phaseLabels[phase]}</span><span className="status-protocol">POST /api/chat</span></div>
       <div className="messages" role="log" aria-label="Mensajes de la conversación" aria-live="polite" aria-relevant="additions" aria-busy={pending} ref={log} tabIndex={0}>
@@ -98,6 +113,8 @@ export function Chat({ online, phase, onPhaseChange }: { online: boolean; phase:
             <p>{message.role === 'user' ? message.text : message.data.respuesta}</p>
             {message.role === 'assistant' && <>
               <p className={`handoff-note ${message.data.derivar_humano ? 'requested' : ''}`}>{message.data.derivar_humano ? 'Derivación registrada. Esta demo no conecta con Genesys ni con un ejecutivo.' : 'Derivación humana: no solicitada.'}</p>
+              {message.data.estado_llm === 'pendiente' && <p role="status">Preparando respuesta de ayuda…</p>}
+              {message.data.estado_llm === 'degradada' && <p>Modo degradado. Se mantiene la orientación inicial.</p>}
               <ResponseDetails data={message.data} />
             </>}
           </article>

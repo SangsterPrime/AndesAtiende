@@ -21,7 +21,7 @@ def test_nvidia_reintenta_429_y_envia_solo_faq_revisada():
         for call in post.call_args_list:
             payload = call.kwargs['json']
             assert payload['messages'][1]['content'] == (
-                'Consulta: Mi conexión a internet falla.\nArtículo FQ1001: '
+                'Consulta: Mi conexión a internet falla.\nFAQ: '
                 'Reinicia el router, revisa las luces y verifica que no haya corte en tu zona.'
             )
 
@@ -82,3 +82,15 @@ def test_worker_descarta_id_invalido_sin_bd_ni_nvidia():
         llm_worker.consume(db, b'\xff-invalido', 'fake-key', 'fake-model')
     db.execute.assert_not_called()
     generate.assert_not_called()
+
+
+def test_nvidia_rechaza_una_cita_sola():
+    request = httpx.Request('POST', 'https://integrate.api.nvidia.com')
+    with patch.object(llm.httpx, 'post', return_value=httpx.Response(
+        200, request=request, json={'choices': [{'message': {'content': 'Artículo FQ1001'}}]},
+    )):
+        try:
+            llm.generate('falla_conexion', 'test', 'test', Mock())
+        except ValueError:
+            return
+    raise AssertionError('Una cita sola no debe reemplazar la orientación inicial')

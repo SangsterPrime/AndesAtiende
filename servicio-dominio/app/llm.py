@@ -1,5 +1,6 @@
 """Public FAQ excerpts and intent-only inputs for NVIDIA."""
 import os
+import re
 
 import httpx
 
@@ -23,17 +24,18 @@ def enabled():
 
 def generate(intent, key, model, sleep):
     """Generate from a fixed paraphrase and a reviewed public FAQ excerpt."""
-    article, message, answer = FAQ[intent]
+    _, message, answer = FAQ[intent]
     for attempt in range(3):
         response = httpx.post(
             'https://integrate.api.nvidia.com/v1/chat/completions',
             headers={'Authorization': f'Bearer {key}'},
             json={
-                'model': model, 'max_tokens': 160, 'temperature': 0,
+                'model': model, 'max_tokens': 384, 'temperature': 0,
                 'messages': [
-                    {'role': 'system', 'content': 'Responde brevemente en español. Usa solo el artículo de ayuda. '
+                    {'role': 'system', 'content': 'Da directamente al cliente una orientación breve en español. '
+                                                  'Incluye los pasos concretos que permita la FAQ, sin título ni código de artículo. '
                                                   'No inventes datos de cuenta ni afirmes haber ejecutado acciones.'},
-                    {'role': 'user', 'content': f'Consulta: {message}\nArtículo {article}: {answer}'},
+                    {'role': 'user', 'content': f'Consulta: {message}\nFAQ: {answer}'},
                 ],
             }, timeout=4.0,
         )
@@ -42,6 +44,6 @@ def generate(intent, key, model, sleep):
             continue
         response.raise_for_status()
         content = response.json()['choices'][0]['message']['content'].strip()
-        if not content:
-            raise ValueError('Respuesta vacía de NVIDIA')
+        if not content or re.fullmatch(r'(?:art[ií]culo\s*[:#-]?\s*)?FQ[0-9]+[.!]?', content, re.IGNORECASE):
+            raise ValueError('NVIDIA no devolvió una orientación')
         return content[:2000]

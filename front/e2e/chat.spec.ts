@@ -20,6 +20,28 @@ test('chat con teclado, contrato relativo y metadatos reales de la respuesta', a
   expect(resources.some((url) => url.includes('/assets/OrbScene-'))).toBe(false)
 })
 
+test('consulta el estado asíncrono y muestra la respuesta generada sin enviar claves', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  let polls = 0
+  await page.route('**/api/chat', route => route.fulfill({ json: { ...chatFixture, estado_llm: 'pendiente' } }))
+  await page.route('**/api/chat/respuesta/**', async route => {
+    expect(route.request().method()).toBe('GET')
+    expect(route.request().headers()['x-api-key']).toBeUndefined()
+    expect(route.request().url()).toContain(`/api/chat/respuesta/${chatFixture.prediccion_id}`)
+    polls++
+    await route.fulfill({ json: polls === 1 ? { estado_llm: 'pendiente' }
+      : { estado_llm: 'lista', respuesta_llm: 'Respuesta generada de prueba sobre el router.' } })
+  })
+  await page.goto('/')
+  await page.getByRole('textbox').fill('No tengo internet')
+  await page.getByRole('textbox').press('Enter')
+  await expect(page.getByText('Preparando respuesta de ayuda…')).toBeVisible()
+  await expect(page.getByText('Respuesta generada de prueba sobre el router.')).toBeVisible()
+  await page.getByText('Detalles de la clasificación').click()
+  await expect(page.getByText(chatFixture.version_modelo)).toBeVisible()
+  expect(polls).toBe(2)
+})
+
 test('móvil sin desbordamiento y sugerencias accesibles', async ({ page }) => {
   await page.setViewportSize({ width: 360, height: 800 })
   await page.emulateMedia({ reducedMotion: 'reduce' })

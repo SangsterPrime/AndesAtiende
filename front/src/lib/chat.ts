@@ -7,6 +7,7 @@ export interface ChatResponse {
   replica_ia: string | null
   latencia_total_ms: number
   derivar_humano: boolean
+  estado_llm?: "pendiente" | "lista" | "degradada"
 }
 
 export type ChatPhase = 'idle' | 'loading' | 'success' | 'error' | 'offline'
@@ -36,6 +37,7 @@ export function isChatResponse(value: unknown): value is ChatResponse {
     && typeof data.latencia_total_ms === 'number' && Number.isFinite(data.latencia_total_ms)
     && data.latencia_total_ms >= 0 && typeof data.derivar_humano === 'boolean'
     && (data.replica_ia === null || typeof data.replica_ia === 'string')
+    && (data.estado_llm === undefined || ['pendiente', 'lista', 'degradada'].includes(data.estado_llm as string))
 }
 
 export async function sendChat(mensaje: string, signal?: AbortSignal): Promise<ChatResponse> {
@@ -76,4 +78,35 @@ export async function sendChat(mensaje: string, signal?: AbortSignal): Promise<C
     clearTimeout(timeout)
     signal?.removeEventListener('abort', abort)
   }
+}
+
+export async function waitForLlm(id: string, signal: AbortSignal): Promise<string | null> {
+  const deadline = performance.now() + 27_000
+  try {
+    while (!signal.aborted && performance.now() < deadline) {
+      const timeout = Math.max(1, Math.ceil(Math.min(3000, deadline - performance.now())))
+      const response = await fetch(`/api/chat/respuesta/${encodeURIComponent(id)}`, {
+        signal: AbortSignal.any([signal, AbortSignal.timeout(timeout)]),
+        cache: 'no-store',
+      })
+      if (!response.ok) return null
+      const result: unknown = await response.json()
+      if (!result || typeof result !== 'object' || !('estado_llm' in result)) return null
+      if (result.estado_llm === 'lista') {
+        return 'respuesta_llm' in result && typeof result.respuesta_llm === 'string' && result.respuesta_llm.trim()
+          ? result.respuesta_llm : null
+      }
+      if (result.estado_llm !== 'pendiente') return null
+      await new Promise<void>(resolve => {
+        const done = () => { clearTimeout(timer); signal.removeEventListener('abort', done); resolve() }
+        const timer = setTimeout(done, 500)
+        signal.addEventListener('abort', done, { once: true })
+        if (signal.aborted) done()
+      })
+    }
+  } catch {
+    // Fallo de red, timeout o JSON inválido: conservar la orientación inicial.
+    // Nunca reenviar el POST ni inventar una respuesta generada.
+  }
+  return null
 }

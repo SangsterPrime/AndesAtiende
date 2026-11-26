@@ -45,12 +45,18 @@ def test_guard_acepta_clave_valida_sin_imprimirla(shell):
     assert result.stdout == result.stderr == ''
 
 
-def test_template_solo_inyecta_en_chat_y_no_publica_listener_interno():
+def test_template_inyecta_en_chat_y_consulta_acotada_sin_publicar_listener_interno():
     template = (ROOT / 'gateway/nginx.conf').read_text(encoding='utf-8')
-    assert template.count('${EP3_API_KEY}') == 1
+    assert template.count('${EP3_API_KEY}') == 2
     chat = template.split('location = /api/chat {', 1)[1].split('\n        }', 1)[0]
     assert 'proxy_set_header X-API-Key "${EP3_API_KEY}";' in chat
     assert 'proxy_pass http://dominio:8000/chat;' in chat
+    poll = template.split("location ^~ /api/chat/respuesta/ {", 1)[1].split("\n        }", 1)[0]
+    assert 'proxy_set_header X-API-Key "${EP3_API_KEY}";' in poll
+    assert "access_log off;" in poll
+    for location in ('/api/conversacion', '/api/estadisticas'):
+        protected = template.split(f'location = {location} {{', 1)[1].split('}', 1)[0]
+        assert 'EP3_API_KEY' not in protected
     assert 'location = /api/health { proxy_pass http://dominio:8000/health; }' in template
     assert 'location = /docs { proxy_pass http://dominio:8000/docs; }' in template
     assert 'location ^~ /api/predicciones/' in template
@@ -64,3 +70,13 @@ def test_template_solo_inyecta_en_chat_y_no_publica_listener_interno():
     for path in (ROOT / 'front/src').rglob('*'):
         if path.is_file():
             assert 'EP3_API_KEY' not in path.read_text(encoding='utf-8')
+
+
+def test_overlay_llm_reconstruye_front_y_esquema_y_no_publica_rabbitmq():
+    overlay = (ROOT / 'compose.llm.yaml').read_text(encoding='utf-8')
+    for service, dockerfile in [('front', 'front/Dockerfile'), ('carga', 'carga/Dockerfile')]:
+        assert f'  {service}:' in overlay and f'dockerfile: {dockerfile}' in overlay
+    worker = overlay.split('  llm-worker:', 1)[1]
+    assert 'healthcheck:\n      disable: true' in worker
+    assert 'ports:' not in overlay
+    assert 'datos_rabbitmq:' in overlay

@@ -59,13 +59,15 @@ Configura **`EP3_API_KEY` únicamente en el entorno del servidor**, compartida e
 |---|---|
 | `POST /api/predict` | Cabecera `X-API-Key` válida; valida y persiste |
 | `GET /api/predicciones/{id}` | Misma cabecera; SELECT parametrizado por UUID |
+| `POST /api/conversacion`, `GET /api/estadisticas` | Cabecera `X-API-Key` válida |
 | `POST /api/chat` | Chat público mediante BFF: Nginx añade la clave solo en el servidor |
+| `GET /api/chat/respuesta/{id}` | BFF público de sondeo; requiere conocer el UUID devuelto al chat |
 | `GET /api/health` | Público; 200 si PostgreSQL está disponible, 503 en caso contrario |
 | `GET /docs`, `GET /api/openapi.json` | Públicos; esquema APIKey en Swagger, sin clave precargada |
 
 Clave ausente/incorrecta o servidor sin clave válida: **401 antes de parsear JSON/UUID, llamar IA o abrir PostgreSQL**, incluso con JSON roto. Clave válida y entrada inválida: **422**. La consulta devuelve únicamente ID, intención, confianza, versión, fecha y derivación guardadas; no expone el mensaje del usuario ni hace una nueva inferencia. ID válido inexistente: **404**; fallo de BD: **503**. La clave es compartida a nivel de aplicación: no identifica usuarios ni implementa autorización por propietario de cada registro.
 
-El dominio exige clave también para `/chat`; el navegador sigue enviando solo su mensaje a `/api/chat`. Nginx sobrescribe la cabecera **exclusivamente en esa ruta exacta**, nunca en `/api/predict` o en la consulta. Se elimina el proxy público genérico: `/api/ia/*`, `/api/estadisticas`, alias con barra final y demás rutas no declaradas devuelven 404. La comunicación con IA usa un segundo listener en 8081, **no publicado en el host**; dominio/IA/BD no deben publicar puertos. Las redes internas siguen siendo un límite de confianza, no mTLS.
+El dominio exige clave también para `/chat`; el navegador sigue enviando solo su mensaje a `/api/chat`. Nginx sobrescribe la cabecera **únicamente en el chat y su sondeo BFF**, nunca en `/api/predict`, `/api/conversacion`, `/api/estadisticas` o `/api/predicciones/{id}`. Se elimina el proxy público genérico: `/api/ia/*`, alias con barra final y demás rutas no declaradas devuelven 404. La comunicación con IA usa un segundo listener en 8081, **no publicado en el host**; dominio/IA/BD no deben publicar puertos. Las redes internas siguen siendo un límite de confianza, no mTLS.
 
 El chat anónimo es una excepción pública deliberada para conservar la interfaz; **no se afirma que la clave impida todas las inferencias anónimas**, ni que autentique al usuario del chat. Si se requiere eso, también hay que autenticar al usuario y limitar el chat; no se debe resolver entregando la clave compartida al JavaScript.
 
@@ -185,3 +187,66 @@ Los comandos de inspección requieren ajustar el nombre de contenedor obtenido e
 ## Nota sobre arquitectura
 
 La red Docker no está cifrada con mTLS: es una excepción de la demo local, **no** cumplimiento de RT8. Las credenciales PostgreSQL del compose son exclusivamente ejemplos públicos de laboratorio; no sirven para producción. El clasificador nunca debe responder saldos reales ni anular contratos.
+
+### Respuesta generativa asíncrona (EP3)
+
+El overlay `compose.llm.yaml` agrega RabbitMQ y un worker. AndesAtiende persiste la predicción
+de SageMaker y el trabajo pendiente en una transacción. El worker entrega el ID a RabbitMQ,
+recibe el trabajo, consulta NVIDIA y confirma el mensaje después de guardar el resultado.
+El navegador muestra la orientación inicial y consulta el estado hasta que recibe la respuesta
+generada o ve el modo degradado. `POST /api/conversacion` y
+`GET /api/predicciones/{id}` permiten usar el mismo flujo con la clave de integración.
+`POST /api/predict` mide únicamente el clasificador. `GET /api/estadisticas` devuelve agregados
+de conversaciones, distribución de intenciones, derivación y modo degradado con la clave de API.
+
+El overlay también reconstruye `front` (incluye el sondeo asíncrono) y `carga` (crea
+`respuestas_llm` de forma idempotente, sin borrar tablas ni volúmenes EP2). No basta con
+reutilizar sus imágenes `:ep2`. El worker reutiliza la imagen de dominio pero no inicia
+un servidor HTTP: su healthcheck HTTP heredado está desactivado. Eso permite arrancar con
+`--wait`, pero no equivale a una prueba de salud del consumidor; revisar sus logs y la cola.
+
+Solo se envía a NVIDIA una reformulación genérica de una intención admitida y un extracto
+revisado de FAQ. Los trabajos sin FAQ revisada o derivados a un ejecutivo conservan la
+orientación inicial. El worker reintenta dos veces ante HTTP 429 con esperas de 1 y 2 segundos.
+Una respuesta inválida o un fallo del proveedor activa el modo degradado.
+
+En la EC2 existente, agrega `NVIDIA_MODEL` (valor publicado por el docente),
+`NVIDIA_API_KEY` y `RABBITMQ_PASSWORD` a `.env.ep3.local` con un editor en SSH.
+Genera la contraseña de RabbitMQ con `openssl rand -hex 32`. Si RabbitMQ ya tiene un volumen
+inicializado, conserva su contraseña actual. Construye primero las imágenes y luego inicia
+la pila. La imagen de carga reconstruida aplica el esquema al volumen PostgreSQL existente.
+
+```bash
+dc_llm() {
+  sudo docker compose --env-file .env.ep3.local \
+    -f compose.yaml -f compose.ep3.yaml -f compose.llm.yaml "$@"
+}
+dc_llm config --quiet &&
+dc_llm build &&
+dc_llm up -d --no-build --wait &&
+dc_llm ps
+```
+
+Si ya usas `compose.ec2.local.yaml`, conserva sus ajustes y agrega ese archivo antes de
+`compose.llm.yaml` en la lista; no está incluido ni se inspecciona por contener configuración
+privada. El archivo de entorno real también debe conservarse fuera del commit.
+
+Prueba una consulta de conexión en el navegador. La clasificación aparecerá antes que
+la respuesta generada. Verifica también la degradación en un entorno de prueba con una clave
+NVIDIA inválida. Mantén el límite de una réplica del worker para el publicador de la tabla de trabajos.
+
+El frontend consulta `GET /api/chat/respuesta/{id}` durante un máximo aproximado de 27 s,
+sin reenviar `POST /api/chat` ni incluir claves. Al recibir `lista` actualiza solo el texto;
+con degradación, timeout, respuesta inválida o error de red conserva la orientación inicial.
+El sondeo se cancela al desmontar el chat. Nginx añade la clave únicamente a las rutas BFF
+de chat y sondeo; `conversacion`, `predicciones` y `estadisticas` requieren la clave del
+cliente de integración. El listener IA 8081 y RabbitMQ no se publican en el host.
+
+Las pruebas locales usan transportes y proveedores simulados: siguen pendientes RabbitMQ,
+reentrega tras caída, migración sobre PostgreSQL existente, Nginx renderizado, credenciales
+IAM de EC2, SageMaker y la API NVIDIA reales. No se deben probar con datos personales.
+
+Revisión local del flujo asíncrono: **84 pruebas de dominio y 42 de frontend aprobadas**,
+`pnpm build` correcto y **8 pruebas Playwright aprobadas**. Incluye outbox/worker simulados,
+sondeo pendiente→lista, degradación, cancelación y conservación de la versión de SageMaker.
+El build avisa del tamaño del chunk opcional de Three.js (>500 kB); no es un fallo del build.

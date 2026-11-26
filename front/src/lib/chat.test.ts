@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { chatFixture } from '../test/fixtures'
-import { isChatResponse, sendChat } from './chat'
+import { isChatResponse, sendChat, waitForLlm } from './chat'
 
 describe('contrato POST /api/chat', () => {
   it('envía únicamente mensaje a la ruta relativa del gateway y conserva los datos', async () => {
@@ -39,7 +39,7 @@ describe('contrato POST /api/chat', () => {
   it.each([
     { confianza: 2 }, { confianza: -1 }, { confianza: Number.NaN },
     { latencia_total_ms: -1 }, { latencia_total_ms: Infinity },
-    { derivar_humano: 'true' }, { version_modelo: '' }, { replica_ia: 12 },
+    { derivar_humano: 'true' }, { version_modelo: '' }, { replica_ia: 12 }, { estado_llm: 'inventado' },
   ])('rechaza campos fuera del contrato: %o', (patch) => {
     expect(isChatResponse({ ...chatFixture, ...patch })).toBe(false)
   })
@@ -73,5 +73,78 @@ describe('contrato POST /api/chat', () => {
     const result = expect(sendChat('Consulta', controller.signal)).rejects.toMatchObject({ name: 'AbortError' })
     controller.abort()
     await result
+  })
+})
+
+describe('respuesta asíncrona del chat', () => {
+  it('consulta pendiente y luego lista sin claves ni otro POST', async () => {
+    vi.useFakeTimers()
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(Response.json({ estado_llm: 'pendiente' }))
+      .mockResolvedValueOnce(Response.json({ estado_llm: 'lista', respuesta_llm: 'Revisa el router.' }))
+    vi.stubGlobal('fetch', fetchMock)
+    const result = waitForLlm('id/seguro', new AbortController().signal)
+    await vi.advanceTimersByTimeAsync(500)
+    expect(await result).toBe('Revisa el router.')
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    for (const [url, options] of fetchMock.mock.calls) {
+      expect(url).toBe('/api/chat/respuesta/id%2Fseguro')
+      expect(options).toEqual({ signal: expect.any(AbortSignal), cache: 'no-store' })
+    }
+  })
+
+  it.each([
+    { estado_llm: 'degradada' }, { estado_llm: 'desconocido' }, null,
+    { estado_llm: 'lista', respuesta_llm: '' }, { estado_llm: 'lista', respuesta_llm: '  ' },
+    { estado_llm: 'lista', respuesta_llm: 123 },
+  ])('conserva el fallback ante una respuesta inválida o degradada: %o', async payload => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json(payload)))
+    expect(await waitForLlm('id', new AbortController().signal)).toBeNull()
+  })
+
+  it('tolera HTTP 503, JSON roto y fallos de red sin reenviar la consulta', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response('unavailable', { status: 503 }))
+      .mockResolvedValueOnce(new Response('not-json'))
+      .mockRejectedValueOnce(new TypeError('offline'))
+    vi.stubGlobal('fetch', fetchMock)
+    for (let i = 0; i < 3; i++) expect(await waitForLlm('id', new AbortController().signal)).toBeNull()
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+  })
+
+  it('no consulta si ya se canceló', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    const controller = new AbortController()
+    controller.abort()
+    expect(await waitForLlm('id', controller.signal)).toBeNull()
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('cancela también la espera entre sondeos', async () => {
+    vi.useFakeTimers()
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({ estado_llm: 'pendiente' }))
+    vi.stubGlobal('fetch', fetchMock)
+    const controller = new AbortController()
+    const result = waitForLlm('id', controller.signal)
+    await vi.advanceTimersByTimeAsync(0)
+    controller.abort()
+    expect(await result).toBeNull()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('termina tras 27 segundos aunque el backend siga pendiente', async () => {
+    vi.useFakeTimers()
+    const clock = vi.spyOn(performance, 'now').mockImplementation(() => Date.now())
+    try {
+      const fetchMock = vi.fn().mockImplementation(() => Response.json({ estado_llm: 'pendiente' }))
+      vi.stubGlobal('fetch', fetchMock)
+      const result = waitForLlm('id', new AbortController().signal)
+      await vi.advanceTimersByTimeAsync(27_000)
+      expect(await result).toBeNull()
+      expect(fetchMock).toHaveBeenCalledTimes(54)
+    } finally {
+      clock.mockRestore()
+    }
   })
 })
